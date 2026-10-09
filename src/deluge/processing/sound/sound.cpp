@@ -48,6 +48,7 @@
 #include "modulation/params/param_set.h"
 #include "modulation/patch/patch_cable_set.h"
 #include "modulation/patch/patcher.h"
+#include "open303/drive_control.h"
 #include "playback/playback_handler.h"
 #include "processing/engines/audio_engine.h"
 #include "processing/sound/sound_instrument.h"
@@ -136,6 +137,8 @@ void Sound::initParams(ParamManager* paramManager) {
 	unpatchedParams->kind = params::Kind::UNPATCHED_SOUND;
 
 	unpatchedParams->params[params::UNPATCHED_PORTAMENTO].setCurrentValueBasicForSetup(-2147483648);
+	unpatchedParams->params[params::UNPATCHED_OPEN303_DRIVE].setCurrentValueBasicForSetup(
+	    deluge::dsp::open303::kLegacyDrive);
 
 	PatchedParamSet* patchedParams = paramManager->getPatchedParamSet();
 	patchedParams->params[params::LOCAL_VOLUME].setCurrentValueBasicForSetup(0);
@@ -1337,6 +1340,8 @@ void Sound::ensureKnobReferencesCorrectVolume(Knob& knob) {
 
 // p=255 means we're just querying the source to see if it can be patched to anything
 PatchCableAcceptance Sound::maySourcePatchToParam(PatchSource s, uint8_t p, ParamManager* paramManager) {
+	if (synthMode == SynthMode::OPEN303 && p < params::FIRST_GLOBAL)
+		return PatchCableAcceptance::DISALLOWED;
 
 	if (s == PatchSource::NOTE && isDrum()) {
 		return PatchCableAcceptance::DISALLOWED;
@@ -1513,7 +1518,8 @@ void Sound::noteOn(ModelStackWithThreeMainThings* modelStack, ArpeggiatorBase* a
 
 	ModelStackWithSoundFlags* modelStackWithSoundFlags = modelStack->addSoundFlags();
 
-	if (!((synthMode == SynthMode::RINGMOD) || (modelStackWithSoundFlags->checkSourceEverActive(0))
+	if (!((synthMode == SynthMode::OPEN303) || (synthMode == SynthMode::RINGMOD)
+	      || (modelStackWithSoundFlags->checkSourceEverActive(0))
 	      || (modelStackWithSoundFlags->checkSourceEverActive(1))
 	      || (paramManager->getPatchedParamSet()->params[params::LOCAL_NOISE_VOLUME].containsSomething(-2147483648))))
 	    [[unlikely]] {
@@ -1603,89 +1609,109 @@ void Sound::noteOff(ModelStackWithThreeMainThings* modelStack, ArpeggiatorBase* 
 void Sound::noteOnPostArpeggiator(ModelStackWithSoundFlags* modelStack, int32_t noteCodePreArp, int32_t noteCodePostArp,
                                   int32_t velocity, int16_t const* mpeValues, uint32_t sampleSyncLength,
                                   int32_t ticksLate, uint32_t samplesLate, int32_t fromMIDIChannel) {
-	const ActiveVoice* voiceToReuse = nullptr;
-	const ActiveVoice* voiceForLegato = nullptr;
-
-	auto* paramManager = static_cast<ParamManagerForTimeline*>(modelStack->paramManager);
-
-	// If not polyphonic, stop any notes which are releasing, now
-	if (!voices_.empty() && polyphonic != PolyphonyMode::POLY) [[unlikely]] {
-		for (auto it = voices_.begin(); it != voices_.end();) {
-			ActiveVoice& voice = *it;
-			// if it's not MONO, and the envelope is not in release and we're allowing note tails, this is a legato
-			// voice
-			if (polyphonic != PolyphonyMode::MONO && voice->envelopes[0].state < EnvelopeStage::RELEASE
-			    && allowNoteTails(modelStack, true)) {
-				voiceForLegato = &voice;
-				break;
-			}
-
-			// If FM, or no active sources are samples, or still sounding after fast-release, unassign
-			bool needs_unassign = //<
-			    synthMode == SynthMode::FM
-			    || std::ranges::any_of(std::views::iota(0, kNumSources),
-			                           [&](int32_t s) {
-				                           return isSourceActiveCurrently(s, paramManager)
-				                                  && sources[s].oscType != OscType::SAMPLE;
-			                           })
-			    || (voice->envelopes[0].state != EnvelopeStage::FAST_RELEASE
-			        && !voice->doFastRelease(SOFT_CULL_INCREMENT));
-
-			if (needs_unassign) {
-				if (voiceToReuse != nullptr) {
-					// already found a voice we can reuse, discard the rest
-					this->freeActiveVoice(voice, modelStack, false);
-					it = voices_.erase(it);
-					continue; // `it` increment happened on the line above, immediately continue the loop
-				}
-				voice->unassignStuff(false);
-				voiceToReuse = &voice;
-			}
-			it++;
+	if (synthMode == SynthMode::OPEN303) {
+		if (!open303)
+			return;
+		if (!voices_.empty() && voices_.front()->isCullFading())
+			killAllVoices();
+		try {
+			const ActiveVoice& voice = voices_.empty() ? acquireVoice() : voices_.front();
+			updateOpen303Parameters(*static_cast<ParamManagerForTimeline*>(modelStack->paramManager));
+			voice->noteOn(modelStack, noteCodePreArp, noteCodePostArp, velocity, sampleSyncLength, ticksLate,
+			              samplesLate, false, fromMIDIChannel, mpeValues);
+			reassessRenderSkippingStatus(modelStack);
+			if (sideChainSendLevel)
+				AudioEngine::registerSideChainHit(sideChainSendLevel);
+		} catch (deluge::exception) {
+			return;
 		}
 	}
-
-	if (polyphonic == PolyphonyMode::LEGATO && voiceForLegato) [[unlikely]] {
-		(*voiceForLegato)->changeNoteCode(modelStack, noteCodePreArp, noteCodePostArp, fromMIDIChannel, mpeValues);
-	}
 	else {
-		try {
-			const ActiveVoice& voice = voiceToReuse != nullptr ? *voiceToReuse : this->acquireVoice();
-			int32_t envelopePositions[kNumEnvelopes];
+		const ActiveVoice* voiceToReuse = nullptr;
+		const ActiveVoice* voiceForLegato = nullptr;
 
-			if (voiceToReuse != nullptr) [[unlikely]] {
-				// The osc phases and stuff will remain
-				for (int32_t e = 0; e < kNumEnvelopes; e++) {
-					envelopePositions[e] = (*voiceToReuse)->envelopes[e].lastValue;
+		auto* paramManager = static_cast<ParamManagerForTimeline*>(modelStack->paramManager);
+
+		// If not polyphonic, stop any notes which are releasing, now
+		if (!voices_.empty() && polyphonic != PolyphonyMode::POLY) [[unlikely]] {
+			for (auto it = voices_.begin(); it != voices_.end();) {
+				ActiveVoice& voice = *it;
+				// if it's not MONO, and the envelope is not in release and we're allowing note tails, this is a legato
+				// voice
+				if (polyphonic != PolyphonyMode::MONO && voice->envelopes[0].state < EnvelopeStage::RELEASE
+				    && allowNoteTails(modelStack, true)) {
+					voiceForLegato = &voice;
+					break;
 				}
-			}
-			else {
-				// Since we potentially just added a voice where there were none before...
-				reassessRenderSkippingStatus(modelStack);
-				voice->randomizeOscPhases(*this);
-			}
 
-			if (sideChainSendLevel != 0) [[unlikely]] {
-				AudioEngine::registerSideChainHit(sideChainSendLevel);
-			}
+				// If FM, or no active sources are samples, or still sounding after fast-release, unassign
+				bool needs_unassign = //<
+				    synthMode == SynthMode::FM
+				    || std::ranges::any_of(std::views::iota(0, kNumSources),
+				                           [&](int32_t s) {
+					                           return isSourceActiveCurrently(s, paramManager)
+					                                  && sources[s].oscType != OscType::SAMPLE;
+				                           })
+				    || (voice->envelopes[0].state != EnvelopeStage::FAST_RELEASE
+				        && !voice->doFastRelease(SOFT_CULL_INCREMENT));
 
-			bool success = voice->noteOn(modelStack, noteCodePreArp, noteCodePostArp, velocity, sampleSyncLength,
-			                             ticksLate, samplesLate, voiceToReuse == nullptr, fromMIDIChannel, mpeValues);
-			if (success) {
-				if (voiceToReuse != nullptr) {
+				if (needs_unassign) {
+					if (voiceToReuse != nullptr) {
+						// already found a voice we can reuse, discard the rest
+						this->freeActiveVoice(voice, modelStack, false);
+						it = voices_.erase(it);
+						continue; // `it` increment happened on the line above, immediately continue the loop
+					}
+					voice->unassignStuff(false);
+					voiceToReuse = &voice;
+				}
+				it++;
+			}
+		}
+
+		if (polyphonic == PolyphonyMode::LEGATO && voiceForLegato) [[unlikely]] {
+			(*voiceForLegato)->changeNoteCode(modelStack, noteCodePreArp, noteCodePostArp, fromMIDIChannel, mpeValues);
+		}
+		else {
+			try {
+				const ActiveVoice& voice = voiceToReuse != nullptr ? *voiceToReuse : this->acquireVoice();
+				int32_t envelopePositions[kNumEnvelopes];
+
+				if (voiceToReuse != nullptr) [[unlikely]] {
+					// The osc phases and stuff will remain
 					for (int32_t e = 0; e < kNumEnvelopes; e++) {
-						voice->envelopes[e].resumeAttack(envelopePositions[e]);
+						envelopePositions[e] = (*voiceToReuse)->envelopes[e].lastValue;
 					}
 				}
-			}
+				else {
+					// Since we potentially just added a voice where there were none before...
+					reassessRenderSkippingStatus(modelStack);
+					voice->randomizeOscPhases(*this);
+				}
 
-			else {
-				this->checkVoiceExists(voice, "E199");
-				this->freeActiveVoice(voice, modelStack);
+				if (sideChainSendLevel != 0) [[unlikely]] {
+					AudioEngine::registerSideChainHit(sideChainSendLevel);
+				}
+
+				bool success =
+				    voice->noteOn(modelStack, noteCodePreArp, noteCodePostArp, velocity, sampleSyncLength, ticksLate,
+				                  samplesLate, voiceToReuse == nullptr, fromMIDIChannel, mpeValues);
+				if (success) {
+					if (voiceToReuse != nullptr) {
+						for (int32_t e = 0; e < kNumEnvelopes; e++) {
+							voice->envelopes[e].resumeAttack(envelopePositions[e]);
+						}
+					}
+				}
+
+				else {
+					this->checkVoiceExists(voice, "E199");
+					this->freeActiveVoice(voice, modelStack);
+				}
+			} catch (deluge::exception e) {
+				// If we can't acquire a voice, we can't play the note
+				return;
 			}
-		} catch (deluge::exception e) {
-			// If we can't acquire a voice, we can't play the note
-			return;
 		}
 	}
 
@@ -1864,6 +1890,18 @@ void Sound::noteOffPostArpeggiator(ModelStackWithSoundFlags* modelStack, int32_t
 		midiEngine.sendAllNotesOff(this, outputMidiChannel, kMIDIOutputFilterNoMPE);
 	}
 
+	if (synthMode == SynthMode::OPEN303) {
+		if (open303) {
+			if (noteCode == ALL_NOTES_OFF)
+				open303->allNotesOff();
+			else
+				open303->noteOff(noteCode);
+			if (!open303->gateOn() && !voices_.empty())
+				voices_.front()->envelopes[0].unconditionalRelease();
+		}
+		return;
+	}
+
 	if (voices_.empty()) {
 		return;
 	}
@@ -1924,6 +1962,9 @@ justSwitchOff:
 }
 
 bool Sound::allowNoteTails(ModelStackWithSoundFlags* modelStack, bool disregardSampleLoop) {
+	if (synthMode == SynthMode::OPEN303)
+		return true;
+
 	// Return yes unless all active sources are play-once samples, or envelope 0 has no sustain
 
 	// If arp on, then definitely yes
@@ -2971,6 +3012,8 @@ void Sound::ensureParamPresetValueWithoutKnobIsZeroWithMinimalDetails(ParamManag
 }
 
 void Sound::doneReadingFromFile() {
+	if (synthMode == SynthMode::OPEN303)
+		updateOpen303KnobAssignments(true);
 	calculateEffectiveVolume();
 	recalculateFineTuner();
 
@@ -3046,13 +3089,108 @@ void Sound::calculateEffectiveVolume() {
 	volumeNeutralValueForUnison = (float)134217728 / sqrtf(numUnison);
 }
 
+bool Sound::prepareOpen303() {
+	if (open303)
+		return true;
+	try {
+		open303 = std::make_unique<deluge::dsp::open303::Engine>();
+		return true;
+	} catch (deluge::exception) {
+		return false;
+	} catch (const std::bad_alloc&) {
+		return false;
+	}
+}
+
+void Sound::updateOpen303Parameters(ParamManagerForTimeline& paramManager) {
+	open303->setDrive(deluge::dsp::open303::driveAmountFromValue(
+	    paramManager.getUnpatchedParamSet()->getValue(params::UNPATCHED_OPEN303_DRIVE), clippingAmount));
+	open303->setParameters(deluge::dsp::open303::Engine::fromDeluge(
+	    getSmoothedPatchedParamValue(params::LOCAL_LPF_FREQ, paramManager),
+	    getSmoothedPatchedParamValue(params::LOCAL_LPF_RESONANCE, paramManager),
+	    getSmoothedPatchedParamValue(params::LOCAL_OSC_A_PHASE_WIDTH, paramManager),
+	    getSmoothedPatchedParamValue(params::LOCAL_ENV_0_DECAY, paramManager),
+	    getSmoothedPatchedParamValue(params::LOCAL_ENV_0_SUSTAIN, paramManager),
+	    sources[0].oscType == OscType::SQUARE));
+}
+
+char const* Sound::getPatchedParamNameOverride(int32_t param) const {
+	if (synthMode != SynthMode::OPEN303)
+		return nullptr;
+	using enum deluge::l10n::String;
+	switch (param) {
+	case params::LOCAL_OSC_A_PHASE_WIDTH:
+		return deluge::l10n::get(STRING_FOR_OPEN303_ENV_MOD);
+	case params::LOCAL_ENV_0_DECAY:
+		return deluge::l10n::get(STRING_FOR_DECAY);
+	case params::LOCAL_ENV_0_SUSTAIN:
+		return deluge::l10n::get(STRING_FOR_OPEN303_ACCENT);
+	default:
+		return nullptr;
+	}
+}
+
+void Sound::updateOpen303KnobAssignments(bool enabled) {
+	// Restore the envelope bank used by earlier 303 presets.
+	if (modKnobs[2][1].paramDescriptor.isSetToParamWithNoSource(params::LOCAL_OSC_A_PHASE_WIDTH)
+	    && modKnobs[2][0].paramDescriptor.isSetToParamWithNoSource(params::LOCAL_ENV_0_DECAY)) {
+		modKnobs[2][1].paramDescriptor.setToHaveParamOnly(params::LOCAL_ENV_0_ATTACK);
+		modKnobs[2][0].paramDescriptor.setToHaveParamOnly(params::LOCAL_ENV_0_RELEASE);
+	}
+
+	ParamDescriptor lfoPitch;
+	lfoPitch.setToHaveParamAndSource(params::LOCAL_PITCH_ADJUST, PatchSource::LFO_GLOBAL_1);
+	auto& custom1Top = modKnobs[5][1].paramDescriptor;
+	auto& custom1Bottom = modKnobs[5][0].paramDescriptor;
+	if (enabled && custom1Top.isSetToParamWithNoSource(params::GLOBAL_LFO_FREQ_1) && custom1Bottom == lfoPitch) {
+		custom1Top.setToHaveParamOnly(params::LOCAL_OSC_A_PHASE_WIDTH);
+		custom1Bottom.setToHaveParamOnly(params::LOCAL_ENV_0_DECAY);
+	}
+	else if (!enabled && custom1Top.isSetToParamWithNoSource(params::LOCAL_OSC_A_PHASE_WIDTH)
+	         && custom1Bottom.isSetToParamWithNoSource(params::LOCAL_ENV_0_DECAY)) {
+		custom1Top.setToHaveParamOnly(params::GLOBAL_LFO_FREQ_1);
+		custom1Bottom = lfoPitch;
+	}
+
+	const int32_t portamento = params::UNPATCHED_START + params::UNPATCHED_PORTAMENTO;
+	const int32_t stutter = params::UNPATCHED_START + params::UNPATCHED_STUTTER_RATE;
+	const int32_t drive = params::UNPATCHED_START + params::UNPATCHED_OPEN303_DRIVE;
+	auto& custom2Top = modKnobs[6][1].paramDescriptor;
+	auto& custom2Bottom = modKnobs[6][0].paramDescriptor;
+	const bool standardPair =
+	    custom2Top.isSetToParamWithNoSource(stutter) && custom2Bottom.isSetToParamWithNoSource(portamento);
+	const bool legacyPair = custom2Top.isSetToParamWithNoSource(stutter)
+	                        && custom2Bottom.isSetToParamWithNoSource(params::LOCAL_ENV_0_SUSTAIN);
+	if (enabled && (standardPair || legacyPair)) {
+		custom2Top.setToHaveParamOnly(params::LOCAL_ENV_0_SUSTAIN);
+		custom2Bottom.setToHaveParamOnly(drive);
+	}
+	else if (!enabled
+	         && ((custom2Top.isSetToParamWithNoSource(params::LOCAL_ENV_0_SUSTAIN)
+	              && custom2Bottom.isSetToParamWithNoSource(drive))
+	             || legacyPair)) {
+		custom2Top.setToHaveParamOnly(stutter);
+		custom2Bottom.setToHaveParamOnly(portamento);
+	}
+}
+
 // May change mod knob functions. You must update mod knob levels after calling this
 void Sound::setSynthMode(SynthMode value, Song* song) {
+	if (value == SynthMode::OPEN303 && !prepareOpen303()) {
+		display->displayError(Error::INSUFFICIENT_RAM);
+		return;
+	}
 
 	killAllVoices(); // This saves a lot of potential problems, to do with samples playing. E002 was being caused
 
 	SynthMode oldSynthMode = synthMode;
+	if (oldSynthMode == SynthMode::OPEN303 && value != SynthMode::OPEN303)
+		updateOpen303KnobAssignments(false);
 	synthMode = value;
+	if (value == SynthMode::OPEN303 && oldSynthMode != SynthMode::OPEN303)
+		updateOpen303KnobAssignments(true);
+	if (value != SynthMode::OPEN303)
+		open303.reset();
 
 	// Change mod knob functions over. Switching *to* FM...
 	if (synthMode == SynthMode::FM && oldSynthMode != SynthMode::FM) {
@@ -3256,6 +3394,9 @@ Error Sound::readFromFile(Deserializer& reader, ModelStackWithModControllable* m
 			reader.exitTag(tagName);
 		}
 	}
+
+	if (synthMode == SynthMode::OPEN303 && !prepareOpen303())
+		return Error::INSUFFICIENT_RAM;
 
 	// old FM patches can have a filter mode saved in them even though it wouldn't have rendered at the time
 	if (synthMode == SynthMode::FM && song_firmware_version < FirmwareVersion::community({1, 2, 0})) {
@@ -3772,7 +3913,12 @@ bool Sound::readParamTagFromFile(Deserializer& reader, char const* tagName, Para
 	ParamCollectionSummary* patchedParamsSummary = paramManager->getPatchedParamSetSummary();
 	PatchedParamSet* patchedParams = (PatchedParamSet*)patchedParamsSummary->paramCollection;
 
-	if (!strcmp(tagName, "portamento")) {
+	if (!strcmp(tagName, "open303Drive")) {
+		unpatchedParams->readParam(reader, unpatchedParamsSummary, params::UNPATCHED_OPEN303_DRIVE,
+		                           readAutomationUpToPos);
+		reader.exitTag("open303Drive");
+	}
+	else if (!strcmp(tagName, "portamento")) {
 		unpatchedParams->readParam(reader, unpatchedParamsSummary, params::UNPATCHED_PORTAMENTO, readAutomationUpToPos);
 		reader.exitTag("portamento");
 	}
@@ -4057,6 +4203,11 @@ void Sound::writeParamsToFile(Serializer& writer, ParamManager* paramManager, bo
 	PatchedParamSet* patchedParams = paramManager->getPatchedParamSet();
 	UnpatchedParamSet* unpatchedParams = paramManager->getUnpatchedParamSet();
 
+	auto& drive = unpatchedParams->params[params::UNPATCHED_OPEN303_DRIVE];
+	if (drive.getCurrentValue() != deluge::dsp::open303::kLegacyDrive || drive.isAutomated()) {
+		unpatchedParams->writeParamAsAttribute(writer, "open303Drive", params::UNPATCHED_OPEN303_DRIVE,
+		                                       writeAutomation);
+	}
 	unpatchedParams->writeParamAsAttribute(writer, "portamento", params::UNPATCHED_PORTAMENTO, writeAutomation);
 	unpatchedParams->writeParamAsAttribute(writer, "compressorShape", params::UNPATCHED_SIDECHAIN_SHAPE,
 	                                       writeAutomation);
@@ -4398,7 +4549,10 @@ void Sound::modButtonAction(uint8_t whichModButton, bool on, ParamManagerForTime
 
 	if (ourModKnobTop->paramDescriptor.isSetToParamWithNoSource(params::LOCAL_LPF_FREQ)
 	    && ourModKnobBottom->paramDescriptor.isSetToParamWithNoSource(params::LOCAL_LPF_RESONANCE)) {
-		displayFilterSettings(on, FilterType::LPF);
+		if (synthMode == SynthMode::OPEN303)
+			displayOtherModKnobSettings(whichModButton, on);
+		else
+			displayFilterSettings(on, FilterType::LPF);
 	}
 	else if (ourModKnobTop->paramDescriptor.isSetToParamWithNoSource(params::LOCAL_HPF_FREQ)
 	         && ourModKnobBottom->paramDescriptor.isSetToParamWithNoSource(params::LOCAL_HPF_RESONANCE)) {
@@ -4478,6 +4632,14 @@ bool Sound::modEncoderButtonAction(uint8_t whichModEncoder, bool on, ModelStackW
 	int32_t modKnobMode = *getModKnobMode();
 
 	ModKnob* ourModKnob = &modKnobs[modKnobMode][whichModEncoder];
+
+	if (synthMode == SynthMode::OPEN303
+	    && (ourModKnob->paramDescriptor.isSetToParamWithNoSource(params::LOCAL_LPF_FREQ)
+	        || ourModKnob->paramDescriptor.isSetToParamWithNoSource(params::LOCAL_LPF_RESONANCE))) {
+		if (on)
+			display->displayPopup(deluge::l10n::get(deluge::l10n::String::STRING_FOR_OPEN303));
+		return false;
+	}
 
 	if (ourModKnob->paramDescriptor.isSetToParamWithNoSource(params::UNPATCHED_START
 	                                                         + params::UNPATCHED_STUTTER_RATE)) {
@@ -4788,6 +4950,8 @@ void Sound::deleteMultiRange(int32_t s, int32_t r) {
 
 // This function has to give the same outcome as Source::renderInStereo()
 bool Sound::renderingVoicesInStereo(ModelStackWithSoundFlags* modelStack) {
+	if (synthMode == SynthMode::OPEN303)
+		return false;
 
 	// audioDriver deciding we're rendering in mono overrides everything
 	if (!AudioEngine::renderInStereo) {
@@ -4931,6 +5095,9 @@ void Sound::freeActiveVoice(const ActiveVoice& voice, ModelStackWithSoundFlags* 
 }
 
 void Sound::killAllVoices() {
+	if (open303)
+		open303->reset();
+
 	// Reset invertReversed flag so all voices get its reverse settings back to normal
 	invertReversed = false;
 

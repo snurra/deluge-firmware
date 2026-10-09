@@ -30,6 +30,7 @@
 #include "modulation/params/param.h"
 #include "modulation/params/param_manager.h"
 #include "modulation/patch/patch_cable_set.h"
+#include "open303/drive_control.h"
 #include "processing/engines/audio_engine.h"
 #include "processing/sound/sound.h"
 #include "storage/flash_storage.h"
@@ -387,6 +388,20 @@ UnpatchedParamSet::UnpatchedParamSet(ParamCollectionSummary* summary) : ParamSet
 	topUintToRepParams = (numParams_ - 1) >> 5;
 }
 
+ModelStackWithAutoParam* UnpatchedParamSet::getAutoParamFromId(ModelStackWithParamId* modelStack, bool allowCreation) {
+	if (kind == params::Kind::UNPATCHED_SOUND && modelStack->paramId == params::UNPATCHED_OPEN303_DRIVE
+	    && modelStack->modControllable) {
+		auto& drive = params[params::UNPATCHED_OPEN303_DRIVE];
+		if (drive.getCurrentValue() == deluge::dsp::open303::kLegacyDrive && !drive.isAutomated()) {
+			// Materialize the legacy value before editing so recording starts from the audible drive level.
+			const auto* sound = static_cast<Sound*>(modelStack->modControllable);
+			drive.setCurrentValueBasicForSetup(
+			    deluge::dsp::open303::resolveDriveValue(drive.getCurrentValue(), sound->clippingAmount));
+		}
+	}
+	return ParamSet::getAutoParamFromId(modelStack, allowCreation);
+}
+
 void UnpatchedParamSet::beenCloned(bool copyAutomation, int32_t reverseDirectionWithLength) {
 	params = params_.data();
 	numParams_ = static_cast<int32_t>(params_.size());
@@ -431,6 +446,10 @@ bool UnpatchedParamSet::shouldParamIndicateMiddleValue(ModelStackWithParamId con
 	return false;
 }
 int32_t UnpatchedParamSet::paramValueToKnobPos(int32_t paramValue, ModelStackWithAutoParam* modelStack) {
+	if (kind == params::Kind::UNPATCHED_SOUND && modelStack && modelStack->paramId == params::UNPATCHED_OPEN303_DRIVE) {
+		const auto* sound = static_cast<Sound*>(modelStack->modControllable);
+		return deluge::dsp::open303::driveKnobPosFromValue(paramValue, sound ? sound->clippingAmount : 0);
+	}
 	if (modelStack && (modelStack->paramId == params::UNPATCHED_COMPRESSOR_THRESHOLD)) {
 		return (paramValue >> 24) - 64;
 	}
@@ -440,6 +459,9 @@ int32_t UnpatchedParamSet::paramValueToKnobPos(int32_t paramValue, ModelStackWit
 }
 
 int32_t UnpatchedParamSet::knobPosToParamValue(int32_t knobPos, ModelStackWithAutoParam* modelStack) {
+	if (kind == params::Kind::UNPATCHED_SOUND && modelStack && modelStack->paramId == params::UNPATCHED_OPEN303_DRIVE) {
+		return deluge::dsp::open303::driveValueFromKnobPos(knobPos);
+	}
 	if (modelStack && (modelStack->paramId == params::UNPATCHED_COMPRESSOR_THRESHOLD)) {
 		int32_t paramValue = 2147483647;
 		if (knobPos < 64) {
@@ -533,6 +555,12 @@ int32_t PatchedParamSet::paramValueToKnobPos(int32_t paramValue, ModelStackWithA
 	if (modelStack
 	    && (modelStack->paramId == params::LOCAL_OSC_A_PHASE_WIDTH
 	        || modelStack->paramId == params::LOCAL_OSC_B_PHASE_WIDTH)) {
+		// Early 303 presets can contain negative envelope amounts; the core treats them as zero.
+		if (modelStack->modControllable
+		    && static_cast<Sound*>(modelStack->modControllable)->getSynthMode() == SynthMode::OPEN303
+		    && modelStack->paramId == params::LOCAL_OSC_A_PHASE_WIDTH) {
+			paramValue = std::max<int32_t>(0, paramValue);
+		}
 		return (paramValue >> 24) - 64;
 	}
 	else {

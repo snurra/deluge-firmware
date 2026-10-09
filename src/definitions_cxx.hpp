@@ -422,8 +422,9 @@ enum class SynthMode : uint8_t {
 	SUBTRACTIVE,
 	FM,
 	RINGMOD,
+	OPEN303,
 };
-constexpr int kNumSynthModes = util::to_underlying(::SynthMode::RINGMOD) + 1;
+constexpr int kNumSynthModes = util::to_underlying(::SynthMode::OPEN303) + 1;
 
 constexpr int32_t SAMPLE_MAX_TRANSPOSE = 24;
 constexpr int32_t SAMPLE_MIN_TRANSPOSE = (-96);

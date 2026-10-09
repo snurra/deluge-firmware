@@ -63,13 +63,15 @@ public:
 		    l10n::getView(l10n::String::STRING_FOR_SUBTRACTIVE),
 		    l10n::getView(l10n::String::STRING_FOR_FM),
 		    l10n::getView(l10n::String::STRING_FOR_RINGMOD),
+		    l10n::getView(l10n::String::STRING_FOR_OPEN303),
 		};
 	}
 
 	bool isRelevant(ModControllableAudio* modControllable, int32_t whichThing) const override {
 		Sound* sound = static_cast<Sound*>(modControllable);
-		return (sound->sources[0].oscType <= kLastRingmoddableOscType
-		        && sound->sources[1].oscType <= kLastRingmoddableOscType);
+		return sound->synthMode == SynthMode::OPEN303
+		       || (sound->sources[0].oscType <= kLastRingmoddableOscType
+		           && sound->sources[1].oscType <= kLastRingmoddableOscType);
 	}
 };
 } // namespace deluge::gui::menu_item

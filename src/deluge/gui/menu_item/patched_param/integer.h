@@ -29,6 +29,8 @@ public:
 	    : PatchedParam(newP), IntegerContinuous(newName, title) {}
 	Integer(l10n::String newName, l10n::String title, int32_t newP, RenderingStyle style)
 	    : PatchedParam(newP), IntegerContinuous(newName, title), number_style_{style} {}
+	std::string_view getName() const override;
+	std::string_view getTitle() const override;
 	// 7SEG Only
 	void drawValue() override { display->setTextAsNumber(this->getValue(), shouldDrawDotOnName()); }
 
@@ -73,6 +75,7 @@ public:
 	}
 
 protected:
+	char const* getNameOverride() const;
 	void readCurrentValue() override;
 	void writeCurrentValue() final;
 	virtual int32_t getFinalValue();

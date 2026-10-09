@@ -27,13 +27,19 @@ public:
 	PulseWidth(l10n::String name, l10n::String title_format_str, int32_t newP, uint8_t source_id)
 	    : PatchedParam(name, newP, source_id), FormattedTitle(title_format_str, source_id + 1) {}
 
-	[[nodiscard]] std::string_view getTitle() const override { return FormattedTitle::title(); }
+	[[nodiscard]] std::string_view getTitle() const override {
+		if (auto name = getNameOverride())
+			return name;
+		return FormattedTitle::title();
+	}
 
 	int32_t getFinalValue() override { return computeFinalValueForHalfPrecisionMenuItem(this->getValue()); }
 
 	void readCurrentValue() override {
-		this->setValue(computeCurrentValueForHalfPrecisionMenuItem(
-		    soundEditor.currentParamManager->getPatchedParamSet()->getValue(getP())));
+		int32_t value = soundEditor.currentParamManager->getPatchedParamSet()->getValue(getP());
+		if (getNameOverride())
+			value = std::max<int32_t>(0, value);
+		this->setValue(computeCurrentValueForHalfPrecisionMenuItem(value));
 	}
 
 	bool isRelevant(ModControllableAudio* modControllable, int32_t whichThing) const override {
@@ -53,6 +59,10 @@ public:
 	}
 
 	void renderInHorizontalMenu(const SlotPosition& slot) override {
+		if (getNameOverride()) {
+			Integer::renderInHorizontalMenu(slot);
+			return;
+		}
 		oled_canvas::Canvas& image = OLED::main;
 
 		const float norm = getValue() / 50.0f;

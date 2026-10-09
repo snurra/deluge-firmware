@@ -123,7 +123,7 @@ const uint32_t mutePadActionUIModes[] = {UI_MODE_NOTES_PRESSED, UI_MODE_AUDITION
 
 const uint32_t verticalScrollUIModes[] = {UI_MODE_NOTES_PRESSED, UI_MODE_AUDITIONING, UI_MODE_RECORD_COUNT_IN, 0};
 
-constexpr int32_t kNumNonGlobalParamsForAutomation = 83;
+constexpr int32_t kNumNonGlobalParamsForAutomation = 84;
 constexpr int32_t kNumGlobalParamsForAutomation = 39;
 
 // synth and kit rows FX - sorted in the order that Parameters are scrolled through on the display
@@ -157,6 +157,7 @@ const std::array<std::pair<params::Kind, ParamType>, kNumNonGlobalParamsForAutom
     {params::Kind::UNPATCHED_SOUND, params::UNPATCHED_SAMPLE_RATE_REDUCTION},
     {params::Kind::UNPATCHED_SOUND, params::UNPATCHED_BITCRUSHING},
     {params::Kind::PATCHED, params::LOCAL_FOLD},
+    {params::Kind::UNPATCHED_SOUND, params::UNPATCHED_OPEN303_DRIVE},
     // OSC 1 Volume, Pitch, Pulse Width, Carrier Feedback, Wave Index
     {params::Kind::PATCHED, params::LOCAL_OSC_A_VOLUME},
     {params::Kind::PATCHED, params::LOCAL_OSC_A_PITCH_ADJUST},
@@ -2773,8 +2774,20 @@ void AutomationView::selectNonGlobalParam(int32_t offset, Clip* clip) {
 		                                             kNumNonGlobalParamsForAutomation);
 		{
 			auto [kind, id] = nonGlobalParamsForAutomation[idx];
-			if ((clip->output->type == OutputType::KIT) && (kind == params::Kind::UNPATCHED_SOUND)
-			    && (id == params::UNPATCHED_PORTAMENTO)) {
+			Sound* sound = nullptr;
+			if (clip->output->type == OutputType::SYNTH) {
+				sound = static_cast<SoundInstrument*>(clip->output);
+			}
+			else if (clip->output->type == OutputType::KIT) {
+				auto* drum = static_cast<Kit*>(clip->output)->selectedDrum;
+				if (drum && drum->type == DrumType::SOUND)
+					sound = static_cast<SoundDrum*>(drum);
+			}
+			const bool unavailableDrive = kind == params::Kind::UNPATCHED_SOUND && id == params::UNPATCHED_OPEN303_DRIVE
+			                              && (!sound || sound->getSynthMode() != SynthMode::OPEN303);
+			if (unavailableDrive
+			    || ((clip->output->type == OutputType::KIT) && (kind == params::Kind::UNPATCHED_SOUND)
+			        && (id == params::UNPATCHED_PORTAMENTO))) {
 				if (offset < 0) {
 					offset -= 1;
 				}

@@ -1,4 +1,19 @@
-# Deluge Community Firmware
+# Custom Deluge Firmware
+
+Personal firmware fork for the Synthstrom Deluge, based on
+[SynthstromAudible/DelugeFirmware](https://github.com/SynthstromAudible/DelugeFirmware).
+
+- `main` follows the official firmware without custom changes.
+- `feature/open303` contains the Open303 synth engine and its Deluge controls.
+- `custom` combines the features selected for the personal firmware build.
+  It currently contains the same changes as `feature/open303`.
+
+The first addition is a monophonic 303 engine with accent, slide, assignable drive
+and gold-knob controls designed for the numeric-display Deluge.
+See the [Open303 guide](docs/open303-prototype.md) for controls, build instructions,
+desktop tests and hardware checks still pending. This is experimental firmware.
+
+## Deluge Community Firmware
 
 ## Dear Deluge owners
 If you want to start using the community firmware please visit https://delugecommunity.com/ for all relevant details.

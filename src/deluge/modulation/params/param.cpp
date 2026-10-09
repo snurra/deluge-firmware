@@ -182,6 +182,8 @@ char const* getPatchedParamShortName(ParamType type) {
 
 char const* getPatchedParamShortName(ParamType type, ModControllableAudio* modControllable) {
 	if (modControllable != nullptr) {
+		if (auto name = modControllable->getPatchedParamNameOverride(type))
+			return name;
 		// See getParamDisplayName: the ladder filters rename morph after what it actually does.
 		if (type == LOCAL_LPF_MORPH
 		    && dsp::filter::SpecificFilter(modControllable->lpfMode).getFamily()
@@ -321,6 +323,7 @@ char const* getParamDisplayName(Kind kind, int32_t p) {
 		using enum UnpatchedSound;
 		static l10n::String const NAMES[UNPATCHED_SOUND_MAX_NUM - unc] = {
 		    [UNPATCHED_PORTAMENTO - unc] = STRING_FOR_PORTAMENTO,
+		    [UNPATCHED_OPEN303_DRIVE - unc] = STRING_FOR_SATURATION,
 		};
 		return l10n::get(NAMES[p - unc]);
 	}
@@ -357,6 +360,10 @@ char const* getParamDisplayName(Kind kind, int32_t p, ModControllableAudio* modC
 	using enum l10n::String;
 
 	if (modControllable != nullptr) {
+		if (kind == Kind::PATCHED) {
+			if (auto name = modControllable->getPatchedParamNameOverride(p))
+				return name;
+		}
 		bool isLPFMorph = (kind == Kind::PATCHED && p == LOCAL_LPF_MORPH)
 		                  || (kind == Kind::UNPATCHED_GLOBAL && p == UnpatchedGlobal::UNPATCHED_LPF_MORPH);
 		bool isHPFMorph = (kind == Kind::PATCHED && p == LOCAL_HPF_MORPH)
@@ -422,6 +429,8 @@ constexpr char const* paramNameForFileConst(Kind const kind, ParamType const par
 		switch (static_cast<UnpatchedSound>(param - UNPATCHED_START)) {
 		case UNPATCHED_PORTAMENTO:
 			return "portamento";
+		case UNPATCHED_OPEN303_DRIVE:
+			return "open303Drive";
 
 		default:
 		    // Fall through to the other param kind handling

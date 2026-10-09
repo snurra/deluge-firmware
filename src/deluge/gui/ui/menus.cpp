@@ -139,6 +139,7 @@
 #include "gui/menu_item/note_row/iterance_preset.h"
 #include "gui/menu_item/note_row/iterance_step_toggle.h"
 #include "gui/menu_item/note_row/probability.h"
+#include "gui/menu_item/open303.h"
 #include "gui/menu_item/osc/audio_recorder.h"
 #include "gui/menu_item/osc/pulse_width.h"
 #include "gui/menu_item/osc/retrigger_phase.h"
@@ -1517,11 +1518,23 @@ PLACE_SDRAM_BSS Submenu soundEditorRootDrumActionsMenu{
     {&drumNameEditMenu, &sample0RecorderMenu, &sample1RecorderMenu},
 };
 
+PLACE_SDRAM_BSS open303::Waveform open303Waveform{STRING_FOR_WAVEFORM};
+PLACE_SDRAM_BSS patched_param::Integer open303Cutoff{STRING_FOR_FREQUENCY, params::LOCAL_LPF_FREQ};
+PLACE_SDRAM_BSS patched_param::Integer open303Resonance{STRING_FOR_RESONANCE, params::LOCAL_LPF_RESONANCE};
+PLACE_SDRAM_BSS open303::EnvMod open303EnvMod{STRING_FOR_OPEN303_ENV_MOD, params::LOCAL_OSC_A_PHASE_WIDTH};
+PLACE_SDRAM_BSS patched_param::Integer open303Decay{STRING_FOR_DECAY, params::LOCAL_ENV_0_DECAY};
+PLACE_SDRAM_BSS patched_param::Integer open303Accent{STRING_FOR_OPEN303_ACCENT, params::LOCAL_ENV_0_SUSTAIN};
+PLACE_SDRAM_BSS open303::Menu open303Menu{
+    STRING_FOR_OPEN303,
+    {&open303Waveform, &open303Cutoff, &open303Resonance, &open303EnvMod, &open303Decay, &open303Accent, &clippingMenu},
+};
+
 PLACE_SDRAM_BSS Submenu soundEditorRootMenu{
     STRING_FOR_SOUND,
     {
         &soundEditorRootActionsMenu,
         &soundMasterMenu,
+        &open303Menu,
         &arpMenu,
         &randomizerMenu,
         &audioCompMenu,
@@ -1555,6 +1568,7 @@ PLACE_SDRAM_BSS Submenu soundEditorRootMenuDrum{
     {
         &soundEditorRootDrumActionsMenu,
         &soundMasterMenu,
+        &open303Menu,
         &arpMenu,
         &randomizerMenu,
         &audioCompMenu,

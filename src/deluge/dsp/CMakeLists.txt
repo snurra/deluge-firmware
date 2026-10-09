@@ -31,6 +31,7 @@ target_link_libraries(deluge_dsp PRIVATE
     NE10
     eyalroz_printf
     argon
+    open303
 )
 
 target_compile_definitions(deluge_dsp PUBLIC

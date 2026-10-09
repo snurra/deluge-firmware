@@ -30,6 +30,23 @@
 #include "processing/sound/sound_drum.h"
 
 namespace deluge::gui::menu_item::patched_param {
+char const* Integer::getNameOverride() const {
+	return soundEditor.currentModControllable ? soundEditor.currentModControllable->getPatchedParamNameOverride(getP())
+	                                          : nullptr;
+}
+
+std::string_view Integer::getName() const {
+	if (auto name = getNameOverride())
+		return name;
+	return MenuItem::getName();
+}
+
+std::string_view Integer::getTitle() const {
+	if (auto name = getNameOverride())
+		return name;
+	return MenuItem::getTitle();
+}
+
 void Integer::readCurrentValue() {
 	this->setValue(computeCurrentValueForStandardMenuItem(
 	    soundEditor.currentParamManager->getPatchedParamSet()->getValue(getP())));

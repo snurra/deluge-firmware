@@ -16,6 +16,7 @@
  */
 
 #pragma once
+#include "open303/engine.h"
 
 #include "definitions_cxx.hpp"
 #include "model/mod_controllable/mod_controllable_audio.h"
@@ -80,6 +81,9 @@ public:
 	ParamLPF paramLPF{};
 
 	Source sources[kNumSources];
+	std::unique_ptr<deluge::dsp::open303::Engine> open303;
+	bool prepareOpen303();
+	void updateOpen303Parameters(ParamManagerForTimeline& paramManager);
 
 	// This is for the *global* params only, and begins with FIRST_GLOBAL_PARAM, so subtract that from your p value
 	// before accessing this array!
@@ -229,6 +233,7 @@ public:
 	int16_t getMinOscTranspose();
 	void setSynthMode(SynthMode value, Song* song);
 	[[nodiscard]] SynthMode getSynthMode() const { return synthMode; }
+	char const* getPatchedParamNameOverride(int32_t param) const override;
 
 	virtual bool isDrum() { return false; }
 	void setupAsSample(ParamManagerForTimeline* paramManager);
@@ -329,6 +334,7 @@ public:
 	virtual const char* getName() { return nullptr; }
 
 private:
+	void updateOpen303KnobAssignments(bool enabled);
 	uint32_t getGlobalLFOPhaseIncrement(LFO_ID lfoId, deluge::modulation::params::Global param);
 	void recalculateFineTuner();
 	void recalculateModulatorTransposer(uint8_t m, ModelStackWithSoundFlags* modelStack);

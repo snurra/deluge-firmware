@@ -26,9 +26,17 @@ public:
 	Segment(l10n::String newName, l10n::String title, int32_t newP, uint8_t source_id)
 	    : PatchedParam(newName, title, newP, source_id), FormattedTitle(title, source_id + 1) {}
 
-	[[nodiscard]] std::string_view getTitle() const override { return FormattedTitle::title(); }
+	[[nodiscard]] std::string_view getTitle() const override {
+		if (auto name = getNameOverride())
+			return name;
+		return FormattedTitle::title();
+	}
 
 	void getColumnLabel(StringBuf& label) override {
+		if (auto name = getNameOverride()) {
+			label.append(name);
+			return;
+		}
 		const auto& shortNameString = getShortEnvelopeParamName(menu_item::PatchedParam::getP());
 		label.append(deluge::l10n::get(shortNameString));
 	}

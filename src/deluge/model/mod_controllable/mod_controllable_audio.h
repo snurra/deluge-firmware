@@ -49,6 +49,8 @@ public:
 	ModControllableAudio();
 	virtual ~ModControllableAudio();
 	virtual void cloneFrom(ModControllableAudio* other);
+	// Names for synth modes that give existing parameter slots a different purpose.
+	virtual char const* getPatchedParamNameOverride(int32_t param) const { return nullptr; }
 
 	void processStutter(std::span<StereoSample> buffer, ParamManager* paramManager);
 	void processReverbSendAndVolume(std::span<StereoSample> buffer, int32_t* reverbBuffer, int32_t postFXVolume,

@@ -1324,7 +1324,9 @@ int32_t View::calculateKnobPosForDisplay(params::Kind kind, int32_t paramID, int
 	float knobPosFloat = static_cast<float>(knobPos);
 	float knobPosOffsetFloat = static_cast<float>(kKnobPosOffset);
 	float maxKnobPosFloat = static_cast<float>(kMaxKnobPos);
-	float maxMenuValueFloat = static_cast<float>(kMaxMenuValue);
+	float maxMenuValueFloat = (kind == params::Kind::UNPATCHED_SOUND && paramID == params::UNPATCHED_OPEN303_DRIVE)
+	                              ? 15.0f
+	                              : static_cast<float>(kMaxMenuValue);
 	float maxMenuRelativeValueFloat = static_cast<float>(kMaxMenuRelativeValue);
 	float valueForDisplayFloat;
 

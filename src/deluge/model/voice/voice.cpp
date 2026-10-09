@@ -97,6 +97,8 @@ void Voice::setAsUnassigned(ModelStackWithSoundFlags* modelStack, bool deletingS
 }
 
 void Voice::unassignStuff(bool deletingSong) {
+	if (sound.synthMode == SynthMode::OPEN303 && sound.open303)
+		sound.open303->reset();
 	for (int32_t s = 0; s < kNumSources; s++) {
 		for (int32_t u = 0; u < this->sound.numUnison; u++) {
 			unisonParts[u].sources[s].unassign(deletingSong);
@@ -119,6 +121,28 @@ bool Voice::noteOn(ModelStackWithSoundFlags* modelStack, int32_t newNoteCodeBefo
 	noteCodeAfterArpeggiation = newNoteCodeAfterArpeggiation;
 	orderSounded = lastSoundOrder++;
 	overrideAmplitudeEnvelopeReleaseRate = 0;
+	if (sound.synthMode == SynthMode::OPEN303) {
+		sourceValues.fill(0);
+		paramFinalValues.fill(0);
+		localExpressionSourceValuesBeforeSmoothing.fill(0);
+		for (auto& guide : guides) {
+			guide.audioFileHolder = nullptr;
+			guide.loopEndPlaybackAtByte = 0;
+		}
+		for (auto& part : unisonParts) {
+			for (auto& source : part.sources)
+				source.active = false;
+		}
+		for (auto& envelope : envelopes)
+			envelope.noteOn(true, INT32_MAX);
+		if (!justCreated)
+			doneFirstRender = false;
+		previouslyIgnoredNoteOff = false;
+		justCreated = true;
+		if (sound.open303)
+			sound.open303->noteOn(newNoteCodeAfterArpeggiation, velocity);
+		return sound.open303 != nullptr;
+	}
 
 	if (newNoteCodeAfterArpeggiation >= 128) {
 		sourceValues[util::to_underlying(PatchSource::NOTE)] = 2147483647;
@@ -411,6 +435,8 @@ void Voice::randomizeOscPhases(const Sound& sound) {
 
 // Can accept NULL paramManager
 void Voice::calculatePhaseIncrements(ModelStackWithSoundFlags* modelStack) {
+	if (sound.synthMode == SynthMode::OPEN303)
+		return;
 
 	ParamManagerForTimeline* paramManager = (ParamManagerForTimeline*)modelStack->paramManager;
 	Sound& sound = *static_cast<Sound*>(modelStack->modControllable);
@@ -714,6 +740,28 @@ uint32_t Voice::getLocalLFOPhaseIncrement(LFO_ID lfoId, deluge::modulation::para
 [[gnu::hot]] bool Voice::render(ModelStackWithSoundFlags* modelStack, int32_t* soundBuffer, int32_t numSamples,
                                 bool soundRenderingInStereo, bool applyingPanAtVoiceLevel, uint32_t sourcesChanged,
                                 bool doLPF, bool doHPF, int32_t externalPitchAdjust) {
+	if (sound.synthMode == SynthMode::OPEN303) {
+		if (!sound.open303)
+			return false;
+		sound.updateOpen303Parameters(*static_cast<ParamManagerForTimeline*>(modelStack->paramManager));
+		const auto* expression = modelStack->paramManager->getExpressionParamSet();
+		const uint8_t bendRange =
+		    expression ? expression->bendRanges[BEND_RANGE_MAIN] : FlashStorage::defaultBendRange[BEND_RANGE_MAIN];
+		sound.open303->setPitchBend(sound.transpose + sound.cents / 100.0
+		                            + sound.monophonicExpressionValues[0] / 2147483648.0 * bendRange);
+		for (int32_t i = 0; i < numSamples; ++i) {
+			int32_t sample = sound.open303->renderQ31();
+			if (envelopes[0].state >= EnvelopeStage::FAST_RELEASE) {
+				envelopes[0].render(1, 0, 0, INT32_MAX, 0, decayTableSmall8);
+				if (envelopes[0].state == EnvelopeStage::OFF)
+					return false;
+				sample = multiply_32x32_rshift32(sample, envelopes[0].lastValue) * 2;
+			}
+			soundBuffer[i] += sample;
+		}
+		doneFirstRender = true;
+		return sound.open303->active();
+	}
 	// we spread out over a render cycle - allocating and starting the voice takes more time than rendering it so this
 	// avoids the cpu spike at note on
 	if (justCreated == false) {

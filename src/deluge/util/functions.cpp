@@ -869,12 +869,18 @@ char const* synthModeToString(SynthMode synthMode) {
 	case SynthMode::RINGMOD:
 		return "ringmod";
 
+	case SynthMode::OPEN303:
+		return "open303";
+
 	default:
 		return "subtractive";
 	}
 }
 
 SynthMode stringToSynthMode(char const* string) {
+	if (!strcmp(string, "open303")) {
+		return SynthMode::OPEN303;
+	}
 	if (!strcmp(string, "fm")) {
 		return SynthMode::FM;
 	}

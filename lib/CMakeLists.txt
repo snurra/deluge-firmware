@@ -1,5 +1,7 @@
 cmake_policy(SET CMP0135 NEW)
 
+add_subdirectory(open303)
+
 include(FetchContent)
 
 FetchContent_Declare(argon
